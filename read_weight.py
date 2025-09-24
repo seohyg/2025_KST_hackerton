@@ -3,10 +3,10 @@ import serial
 import time
 
 # 아두이노가 연결된 시리얼 포트와 보드레이트를 설정합니다.
-# 포트 이름은 2단계에서 확인한 이름으로 바꿔주세요. (보통 /dev/ttyACM0 또는 /dev/ttyUSB0)
+# 포트 이름은 2단계에서 확인한 이름으로 바꿔주세요. (보통 /dev/ttyUSB0 또는 /dev/ttyUSB0)
 # 보드레이트는 아두이노 코드의 Serial.begin()에 있는 숫자와 반드시 같아야 합니다. (115200)
 try:
-    ser = serial.Serial('/dev/ttyACM0', 115200, timeout=1)
+    ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
     # 시리얼 포트가 안정적으로 열릴 때까지 잠시 대기
     time.sleep(2) 
     print("시리얼 포드가 연결 되었습니다")
