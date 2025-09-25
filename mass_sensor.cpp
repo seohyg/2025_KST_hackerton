@@ -1,112 +1,143 @@
 /*
- * 최종 개선 - 로드셀 3개용 변화 감지(Threshold) 방식 코드
- * [핵심 기능]
- * - 3개의 로드셀을 독립적으로 측정합니다.
- * - 설정된 문턱값(THRESHOLD) 이상의 큰 무게 변화가 발생할 때만 해당 로드셀의 무게를 출력합니다.
- * - 't' 입력 시 모든 로드셀의 영점을 동시에 재설정합니다.
+ * 최종 수정 - deque를 배열로 대체한 상태 머신 방식 코드
+ * [변경점]
+ * - 아두이노 환경에서 지원하지 않는 #include <deque>를 제거했습니다.
+ * - 고정 크기 배열과 인덱스 변수를 사용하여 '최근 6개 값 저장' 기능을 직접 구현했습니다.
  */
 
 #include <HX711_ADC.h>
 
-// --- 로드셀 1 설정 ---
-const int DT1_PIN = 2;
-const int SCK1_PIN = 3;
+// ========================[ 중요 설정 ]========================
+const float TRIGGER_THRESHOLD = 10.0;
+const int STABILITY_READINGS_COUNT = 6;
+const float STABILITY_THRESHOLD = 1.0;
+const long MEASUREMENT_INTERVAL = 250;
+// =============================================================
+
+enum LoadCellState { IDLE, MEASURING };
+
+// --- 로드셀 1의 상태 변수 (deque 대신 배열 사용) ---
+LoadCellState state1 = IDLE;
+float lastStableWeight1 = 0.0;
+float readings1[STABILITY_READINGS_COUNT];
+int readingIndex1 = 0;
+int readingCount1 = 0;
+unsigned long lastMeasurementTime1 = 0;
+
+// --- 로드셀 2의 상태 변수 ---
+LoadCellState state2 = IDLE;
+float lastStableWeight2 = 0.0;
+float readings2[STABILITY_READINGS_COUNT];
+int readingIndex2 = 0;
+int readingCount2 = 0;
+unsigned long lastMeasurementTime2 = 0;
+
+// --- 로드셀 3의 상태 변수 ---
+LoadCellState state3 = IDLE;
+float lastStableWeight3 = 0.0;
+float readings3[STABILITY_READINGS_COUNT];
+int readingIndex3 = 0;
+int readingCount3 = 0;
+unsigned long lastMeasurementTime3 = 0;
+
+// --- HX711 설정 ---
+const int DT1_PIN = 2, SCK1_PIN = 3;
+const int DT2_PIN = 4, SCK2_PIN = 5;
+const int DT3_PIN = 6, SCK3_PIN = 7;
 HX711_ADC LoadCell1(DT1_PIN, SCK1_PIN);
-const float calFactor1 = 2939.31358; // 1번 로드셀의 보정값
-const float THRESHOLD1 = 5.0;
-float previousWeight1 = 0.0;
-
-// --- 로드셀 2 설정 ---
-const int DT2_PIN = 4;
-const int SCK2_PIN = 5;
 HX711_ADC LoadCell2(DT2_PIN, SCK2_PIN);
-// !!! 중요: 2번 로드셀을 캘리브레이션하여 찾은 값으로 반드시 수정하세요 !!!
-const float calFactor2 = 2939.31358; // 2번 로드셀의 보정값 (임시값)
-const float THRESHOLD2 = 5.0;
-float previousWeight2 = 0.0;
-
-// --- 로드셀 3 설정 ---
-const int DT3_PIN = 6;
-const int SCK3_PIN = 7;
 HX711_ADC LoadCell3(DT3_PIN, SCK3_PIN);
-// !!! 중요: 3번 로드셀을 캘리브레이션하여 찾은 값으로 반드시 수정하세요 !!!
-const float calFactor3 = 2939.31358; // 3번 로드셀의 보정값 (임시값)
-const float THRESHOLD3 = 5.0;
-float previousWeight3 = 0.0;
+const float calFactor1 = 3241.130;
+const float calFactor2 = -3239.660;
+const float calFactor3 = 3307.355;
 
+// 각 로드셀의 상태를 처리하는 함수 (deque 대신 배열과 인덱스 변수 사용)
+void processLoadCell(int id, HX711_ADC &cell, LoadCellState &state, float &lastStableWeight, 
+                     float readings[], int &readingIndex, int &readingCount, unsigned long &lastMeasurementTime) {
+  if (!cell.update()) return;
+  
+  float currentWeight = cell.getData();
+
+  if (state == IDLE) {
+    if (abs(currentWeight - lastStableWeight) > TRIGGER_THRESHOLD) {
+      Serial.print(">> 로드셀 "); Serial.print(id); Serial.println(": 측정 시작됨.");
+      state = MEASURING;
+      readingIndex = 0;
+      readingCount = 0;
+      // 배열을 0으로 초기화 (선택사항)
+      for(int i=0; i<STABILITY_READINGS_COUNT; i++) { readings[i] = 0.0; }
+      readings[readingIndex++] = currentWeight;
+      readingCount++;
+      lastMeasurementTime = millis();
+    }
+  } 
+  else if (state == MEASURING) {
+    if (millis() - lastMeasurementTime >= MEASUREMENT_INTERVAL) {
+      lastMeasurementTime = millis();
+      
+      readings[readingIndex++] = currentWeight;
+      if (readingIndex >= STABILITY_READINGS_COUNT) {
+        readingIndex = 0; // 인덱스가 끝에 도달하면 처음으로 돌아감 (순환)
+      }
+      if (readingCount < STABILITY_READINGS_COUNT) {
+        readingCount++;
+      }
+
+      if (readingCount == STABILITY_READINGS_COUNT) {
+        float maxVal = readings[0], minVal = readings[0];
+        float sum = 0;
+        for (int i = 0; i < readingCount; i++) {
+          if (readings[i] > maxVal) maxVal = readings[i];
+          if (readings[i] < minVal) minVal = readings[i];
+          sum += readings[i];
+        }
+
+        if (maxVal - minVal < STABILITY_THRESHOLD) {
+          float stableWeight = sum / STABILITY_READINGS_COUNT;
+          lastStableWeight = stableWeight;
+          
+          Serial.print("로드셀 "); Serial.print(id); Serial.print(" 무게: ");
+          Serial.print(stableWeight, 2);
+          Serial.println(" g");
+          
+          Serial.print(">> 로드셀 "); Serial.print(id); Serial.println(": 안정됨. 대기 상태로 전환.");
+          state = IDLE;
+        }
+      }
+    }
+  }
+}
 
 void setup() {
   Serial.begin(115200);
   Serial.println("========================================");
-  Serial.println("로드셀 3개 무게 측정을 시작합니다.");
-  Serial.println("'t'를 입력하면 모든 로드셀의 영점을 재설정합니다.");
+  Serial.println("상태 머신 방식 측정을 시작합니다. (배열 Ver)");
   Serial.println("========================================");
 
-  LoadCell1.begin();
-  LoadCell2.begin();
-  LoadCell3.begin();
-
-  LoadCell1.start(2000, true);
-  LoadCell2.start(2000, true);
-  LoadCell3.start(2000, true);
+  LoadCell1.begin(); LoadCell2.begin(); LoadCell3.begin();
+  LoadCell1.start(2000, true); LoadCell2.start(2000, true); LoadCell3.start(2000, true);
+  LoadCell1.setCalFactor(calFactor1); LoadCell2.setCalFactor(calFactor2); LoadCell3.setCalFactor(calFactor3);
   
-  // 각 로드셀에 보정값 설정
-  LoadCell1.setCalFactor(calFactor1);
-  LoadCell2.setCalFactor(calFactor2);
-  LoadCell3.setCalFactor(calFactor3);
-  
-  Serial.println(">> 측정을 시작합니다.");
-  
-  // 시작할 때의 초기 무게를 각 변수에 저장
-  previousWeight1 = LoadCell1.getData();
-  previousWeight2 = LoadCell2.getData();
-  previousWeight3 = LoadCell3.getData();
+  lastStableWeight1 = LoadCell1.getData();
+  lastStableWeight2 = LoadCell2.getData();
+  lastStableWeight3 = LoadCell3.getData();
 }
 
 void loop() {
-  // 't'를 입력받아 모든 로드셀 영점 재설정
   if (Serial.available() > 0) {
-    if (Serial.read() == 't') {
-      LoadCell1.tare();
-      LoadCell2.tare();
-      LoadCell3.tare();
-      Serial.println(">> 모든 로드셀의 영점을 재설정했습니다.");
-      previousWeight1 = 0.0;
-      previousWeight2 = 0.0;
-      previousWeight3 = 0.0;
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+    if (command == "tare") {
+      LoadCell1.tare(); LoadCell2.tare(); LoadCell3.tare();
+      lastStableWeight1 = 0.0; lastStableWeight2 = 0.0; lastStableWeight3 = 0.0;
+      state1 = IDLE; state2 = IDLE; state3 = IDLE;
+      readingCount1 = 0; readingCount2 = 0; readingCount3 = 0;
+      readingIndex1 = 0; readingIndex2 = 0; readingIndex3 = 0;
+      Serial.println(">> 모든 로드셀 영점 재설정 및 상태 초기화.");
     }
   }
 
-  // --- 로드셀 1 측정 ---
-  if (LoadCell1.update()) {
-    float currentWeight1 = LoadCell1.getData();
-    if (abs(currentWeight1 - previousWeight1) > THRESHOLD1) {
-      Serial.print("로드셀 1 무게: ");
-      Serial.print(currentWeight1, 2);
-      Serial.println(" g");
-      previousWeight1 = currentWeight1;
-    }
-  }
-
-  // --- 로드셀 2 측정 ---
-  if (LoadCell2.update()) {
-    float currentWeight2 = LoadCell2.getData();
-    if (abs(currentWeight2 - previousWeight2) > THRESHOLD2) {
-      Serial.print("로드셀 2 무게: ");
-      Serial.print(currentWeight2, 2);
-      Serial.println(" g");
-      previousWeight2 = currentWeight2;
-    }
-  }
-
-  // --- 로드셀 3 측정 ---
-  if (LoadCell3.update()) {
-    float currentWeight3 = LoadCell3.getData();
-    if (abs(currentWeight3 - previousWeight3) > THRESHOLD3) {
-      Serial.print("로드셀 3 무게: ");
-      Serial.print(currentWeight3, 2);
-      Serial.println(" g");
-      previousWeight3 = currentWeight3;
-    }
-  }
+  processLoadCell(1, LoadCell1, state1, lastStableWeight1, readings1, readingIndex1, readingCount1, lastMeasurementTime1);
+  processLoadCell(2, LoadCell2, state2, lastStableWeight2, readings2, readingIndex2, readingCount2, lastMeasurementTime2);
+  processLoadCell(3, LoadCell3, state3, lastStableWeight3, readings3, readingIndex3, readingCount3, lastMeasurementTime3);
 }
